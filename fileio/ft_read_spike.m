@@ -11,7 +11,7 @@ function [spike] = ft_read_spike(filename, varargin)
 %
 % The following file formats are supported
 %   'mclust_t'
-%   'neuralynx_ncs' 
+%   'neuralynx_ncs'
 %   'neuralynx_nse'
 %   'neuralynx_nst'
 %   'neuralynx_ntt'
@@ -83,11 +83,11 @@ switch spikeformat
     spike.hdr = H(:);
     [p, f, x] = fileparts(filename);
     spike.label     = {f};  % use the filename as label for the spike channel
-    spike.timestamp = S;    
+    spike.timestamp = S;
     spike.waveform  = {};   % this is unknown
     spike.unit      = {};   % this is unknown
     spike.hdr       = H;
-    
+
   case 'neuralynx_nse'
     % single channel file, read all records
     nse = read_neuralynx_nse(filename);
@@ -205,7 +205,42 @@ switch spikeformat
       spike.waveform{i} = permute(read_plexon_plx(filename, 'ChannelIndex', i, 'header', hdr),[3 1 2]);
     end
     spike.hdr = hdr;
-    
+
+  case 'plexon_pl2'
+    ft_hastoolbox('PLEXON', 1);
+    hdr = ft_read_header(filename);
+    hdr = hdr.orig;
+    nchan = length(hdr.WFCounts)-1;
+
+    for i=1:nchan
+      spike.label{i} = deblank(hdr.ChannelHeader(i).Name);
+      if sum(hdr.WFCounts(:, i+1)) ~= 0
+        spike.timestamp{i} = [];
+        spike.unit{i} = [];
+        spike.waveform{i} = [];
+        for k=1:5
+          if hdr.WFCounts(k, i+1) ~= 0
+            [n, npw, ts, wave] = plx_waves_v(filename, i, k-1);
+            spike.timestamp{i}(end+1:end+n) = uint64(round(ts*hdr.ADFrequency));
+            spike.unit{i}(end+1:end+n) = int16(k-1);
+            if isempty(spike.waveform{i})
+              spike.waveform{i}(1, :, :) = wave';
+            else
+              spike.waveform{i}(1, :, end+1:end+n) = wave';
+            end
+          end
+        end
+        % sort by timestamps...
+        [~, idx] = sort([spike.timestamp{i}]);
+        spike.timestamp{i} = uint64(spike.timestamp{i}(idx));
+        spike.unit{i} = int16(spike.unit{i}(idx));
+        spike.waveform{i} = spike.waveform{i}(:, :, idx);
+      else
+        spike.timestamp{i} = [];
+        spike.unit{i} = [];
+      end
+    end
+
   case 'neuroshare' % NOTE: still under development
     % check that the required neuroshare toolbox is available
     ft_hastoolbox('neuroshare', 1);
@@ -217,18 +252,18 @@ switch spikeformat
       spike.timestamp{i} = tmp.spikew.timestamp(:,i)';
       spike.unit{i}      = tmp.spikew.unitID(:,i)';
     end
-  
+
   case 'neuroscope'
     % the information about the spikes is represented in:
     % x.clu.y or x.res.y (containing the timing +cluster info)
     % x.spk.y (containing the waveform info)
     % x.fet.y (containing features: do we need this?)
-    
+
     if isdir(filename),
       tmp = dir(filename);
       filenames = {tmp.name}';
     end
-    
+
     % read the header
     filename_hdr = filenames{~cellfun('isempty',strfind(filenames,'.xml'))};
     hdr          = ft_read_header(fullfile(filename,filename_hdr), 'headerformat', 'neuroscope_xml');
@@ -237,10 +272,10 @@ switch spikeformat
 
     filename_clu = filenames(~cellfun('isempty',strfind(filenames,'.clu')));
     filename_spk = filenames(~cellfun('isempty',strfind(filenames,'.spk')));
-    
+
     % FIXME should we do a sanity check on whether the clu and spk actually
     % belong together?
-    
+
     c = cell(numel(filename_clu),1);
     w = cell(numel(filename_spk),1);
     for k = 1:numel(filename_clu)
@@ -249,37 +284,34 @@ switch spikeformat
     for k = 1:numel(filename_spk)
       w{k} = LoadSpikeWaveforms(fullfile(filename,filename_spk{k}),numel(spikegroups.groups{k}),spikegroups.nSamples(k));
     end
-    
+
     spike = [];
     spike.label = cell(hdr.orig.spikeGroups.nGroups,1);
     spike.hdr   = hdr;
     spike.unit      = cell(1,numel(spike.label));
     spike.waveform  = cell(1,numel(spike.label));
     spike.timestamp = cell(1,numel(spike.label));
-    
+
     for k = 1:numel(spike.label)
       sel = find(c{k}(:,3)>1); % values >1 corresponds to individual units, 0 = noise, 1 = MUA
-      
+
       % the times are defined in s, convert to original time stamps
       timestamps = c{k}(sel,1) * hdr.orig.rates.wideband;
       if any(abs(timestamps-round(timestamps))>1e-5),
         error('there seems to be a mismatch between the spike times and the expected integer-valued timestamps');
       end
-      
+
       spike.timestamp{k} = round(timestamps(:))';
       spike.waveform{k}  = permute(w{k}(sel,:,:), [2 3 1]);
       spike.unit{k}      = c{k}(sel,3)';
       spike.label{k}     = sprintf('spikegroup%03d',k);
     end
-     
+
   otherwise
     error(['unsupported data format (' spikeformat ')']);
 end
 
-% add the waveform 
+% add the waveform
 if isfield(spike,'waveform')
-   spike.dimord = '{chan}_lead_time_spike';        
+   spike.dimord = '{chan}_lead_time_spike';
 end
-
-  
-  
